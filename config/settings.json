@@ -1,0 +1,14 @@
+{
+    "threads": 10,
+    "timeout": 15,
+    "webhook_url": "https://discordapp.com/api/webhooks/1463951564321325250/mqKjNbD-qRJ63AE6ycYPVEBsgMN3BKEhc0XIEsPRq6LzhEIiFpDmzjFjpqkxvbUKFRpz",
+    "use_proxies": false,
+    "jitter_min": 0.5,
+    "jitter_max": 1.5,
+    "platforms": {
+        "pinterest": true,
+        "instagram": true,
+        "github": true
+    },
+    "theme": "sun-valley-dark"
+}
