@@ -1,3 +1,7 @@
 requests[socks]>=2.31.0
 win10toast>=0.9; platform_system=="Windows"
 urllib3>=2.6.3 # not directly required, pinned by Snyk to avoid a vulnerability
+
+# development / testing dependencies
+pytest>=7.0
+bandit>=1.7

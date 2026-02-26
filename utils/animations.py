@@ -10,16 +10,16 @@ class AnimationEngine:
     
     @staticmethod
     def slide_in(widget: tk.Widget, from_x: int, to_x: int, duration: int = 300):
-        steps = 20
+        steps = max(10, min(60, duration // 12))
         step_size = (to_x - from_x) / steps
-        delay = duration // steps
-        
+        delay = max(1, duration // steps)
         def animate(step: int):
             if step < steps:
                 new_x = from_x + (step_size * step)
                 widget.place(x=new_x)
                 widget.after(delay, lambda: animate(step + 1))
-        
+            else:
+                widget.place(x=to_x)
         animate(0)
     
     @staticmethod
@@ -27,11 +27,12 @@ class AnimationEngine:
         current = variable.get()
         if current == target:
             return
-        
-        steps = min(30, abs(target - current))
+        steps = max(10, min(60, duration // 12, abs(target - current)))
+        if steps == 0:
+            variable.set(target)
+            return
         step_size = (target - current) / steps
-        delay = duration // steps
-        
+        delay = max(1, duration // steps)
         def animate(step: int):
             if step < steps:
                 new_val = int(current + (step_size * (step + 1)))
@@ -39,7 +40,6 @@ class AnimationEngine:
                 variable._root().after(delay, lambda: animate(step + 1))
             else:
                 variable.set(target)
-        
         animate(0)
     
     @staticmethod

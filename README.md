@@ -2,53 +2,67 @@
 
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
-![Release](https://img.shields.io/badge/Release-1.0.5-brightgreen.svg)
+![Release](https://img.shields.io/badge/Release-1.0.6-brightgreen.svg)
 ![Discord](https://img.shields.io/badge/Discord-Webhook-blueviolet.svg)
+
+A desktop tool for bulk username availability checking and real-time username monitoring across multiple platforms, with Discord notifications and proxy support.
+
+---
 
 ## Features
 
-- **Bulk Username Checking**: Check hundreds of usernames across multiple platforms at once
-- **Sniper Monitor**: Real-time monitoring of specific usernames to catch them when they become available
-- **Multi-Platform Support**: Pinterest, Instagram, and GitHub integration
-- **Discord Webhook Integration**: Get instant notifications when usernames become available
-- **Proxy Support**: Built-in proxy rotation for rate limiting protection
-- **Export Results**: Save available usernames to file for later use
-- **Customizable Settings**: Adjust threads, timeouts, delays, and platform selection
-- **Modern UI**: Clean, dark-themed interface built with Tkinter
+- **Bulk Username Checking** — Check hundreds of usernames across multiple platforms simultaneously
+- **Sniper Monitor** — Real-time monitoring of a target username; get notified the moment it becomes available
+- **Multi-Platform Support** — Pinterest, Instagram, and GitHub
+- **Discord Webhook Notifications** — Instant alerts when a username becomes available
+- **Proxy Rotation** — Built-in proxy management with blacklist support and SOCKS5 compatibility
+- **Export Results** — Save available usernames to file
+- **Customizable Settings** — Configure threads, timeouts, delays, and platform selection
+- **Clean UI** — Dark-themed interface built with Tkinter
+
+---
 
 ## Supported Platforms
 
-- Pinterest
-- Instagram
-- GitHub
+| Platform  | Max Length | Allowed Characters                    | Restrictions                              |
+|-----------|-----------|----------------------------------------|-------------------------------------------|
+| Pinterest | 3–30      | Letters, numbers, underscores          | Cannot be all numbers                     |
+| GitHub    | 39        | Letters, numbers, hyphens              | No leading/trailing/consecutive hyphens   |
+| Instagram | 30        | Letters, numbers, periods, underscores | No leading/trailing/consecutive periods   |
+
+---
 
 ## Installation
 
 ### Prerequisites
 
 - Python 3.8 or higher
-- pip package manager
+- pip
 
 ### Setup
 
-1. Clone the repository:
+**1. Clone the repository:**
+
 ```bash
 git clone https://github.com/00ie/username-checker.git
 cd username-checker
 ```
 
-2. Install required dependencies:
+**2. Install dependencies:**
+
 ```bash
 pip install -r requirements.txt
 ```
 
-Note: the `requirements.txt` includes the `requests[socks]` extras so SOCKS proxies (socks5) are supported if your environment installs the extra dependencies (PySocks). If you prefer to install the SOCKS support separately run:
-```bash
-pip install requests[socks]
-```
+> The `requirements.txt` includes `requests[socks]` for SOCKS5 proxy support. To install it separately:
+> ```bash
+> pip install requests[socks]
+> ```
 
-3. (Optional) Configure proxies:
-Create a `proxies.txt` file in the root directory with one proxy per line. Supported formats:
+**3. Configure proxies (optional):**
+
+Create a `proxies.txt` file inside the `username checker/` folder (created automatically on first run). Add one proxy per line. Supported formats:
+
 ```
 host:port
 user:pass@host:port
@@ -56,15 +70,19 @@ http://host:port
 socks5://host:port
 ```
 
-The app includes a builtin proxy manager and a GUI panel (Bulk tab) where you can add/remove proxies, run a check to validate them and clear the automatic blacklist. Proxies that fail checks are added to `bad_proxies.txt` (blacklist) and shown in the GUI in red.
+The app includes a built-in proxy manager accessible from the GUI. Proxies that fail validation are added to `bad_proxies.txt` and highlighted in red.
 
-4. (Optional) Configure Discord webhook:
+**4. Configure Discord webhook (optional):**
+
 Edit `config/settings.json` and add your webhook URL:
+
 ```json
 {
     "webhook_url": "https://discord.com/api/webhooks/YOUR_WEBHOOK_HERE"
 }
 ```
+
+---
 
 ## Usage
 
@@ -74,28 +92,28 @@ Edit `config/settings.json` and add your webhook URL:
 python main.py
 ```
 
-
 ### Bulk Checker
 
-1. Select platforms to check from the sidebar
-2. Set the number of usernames to generate and their length
-3. Click "GENERATE LIST" to create random usernames
-4. Click "START CHECKING" to begin the bulk check
-5. Available usernames will be displayed in the console with green highlights
-6. Export results using "EXPORT RESULTS" button
+1. Select the platforms to check from the sidebar
+2. Set the number of usernames to generate and their desired length
+3. Click **GENERATE LIST** to create random usernames
+4. Click **START CHECKING** to begin
+5. Available usernames appear highlighted in green in the console
+6. Click **EXPORT RESULTS** to save them
 
 ### Sniper Monitor
 
-1. Switch to the "SNIPER MONITOR" tab
-2. Enter the target username you want to monitor
-3. Set check interval in seconds (default: 60)
-4. Click "ACTIVATE SNIPER" to start monitoring
-5. The tool will continuously check if the username becomes available
-6. You'll receive Discord notifications (if configured) when it's available
+1. Switch to the **SNIPER MONITOR** tab
+2. Enter the target username
+3. Set the check interval in seconds (default: 60)
+4. Click **ACTIVATE SNIPER** to start monitoring
+5. The tool will continuously poll until the username becomes available, then send a Discord notification
+
+---
 
 ## Configuration
 
-Edit `config/settings.json` to customize:
+Edit `config/settings.json` to customize behavior:
 
 ```json
 {
@@ -113,134 +131,184 @@ Edit `config/settings.json` to customize:
 }
 ```
 
-### Configuration Options
+| Option                    | Description                                          |
+|---------------------------|------------------------------------------------------|
+| `threads`                 | Number of concurrent checking threads                |
+| `timeout`                 | HTTP request timeout in seconds                      |
+| `webhook_url`             | Discord webhook URL for notifications                |
+| `use_proxies`             | Enable or disable proxy rotation                     |
+| `jitter_min` / `jitter_max` | Random delay range between requests (seconds)      |
+| `platforms`               | Enable or disable individual platforms               |
 
-- **threads**: Number of concurrent checking threads
-- **timeout**: HTTP request timeout in seconds
-- **webhook_url**: Discord webhook URL for notifications
-- **use_proxies**: Enable/disable proxy rotation
-- **jitter_min/max**: Random delay between requests (in seconds)
-- **platforms**: Enable/disable specific platforms
+---
 
 ## Project Structure
 
 ```
 username-checker/
-├── main.py                 # Application entry point
-├── requirements.txt        # Python dependencies
-├── .gitignore              # Git ignore rules
+├── main.py
+├── requirements.txt
+├── README.md
+├── .gitignore
+│
 ├── config/
-│   ├── settings.json       # Configuration file
-│   └── settings.py         # Settings manager
+│   ├── settings.json
+│   ├── settings.py
+│   ├── theme_manager.py
+│   └── __init__.py
+│
 ├── core/
-│   ├── engine.py           # Main checking engine
-│   ├── platforms.py        # Platform-specific checkers
-│   └── validation.py       # Username validation rules
+│   ├── engine.py
+│   ├── platforms.py
+│   ├── proxy_checker.py
+│   ├── validation.py
+│   └── __init__.py
+│
 ├── gui/
-│   ├── app_window.py       # Main application window
-│   ├── window.py           # Alternate UI window
-│   └── ui_kit.py            # UI helpers
-├── themes python/
-│   └── Sun-Valley-ttk-theme-main/
-└── utils/
-    └── ...
+│   ├── app_window.py
+│   ├── ui_components.py
+│   ├── widgets.py
+│   └── __init__.py
+│
+├── utils/
+│   ├── animations.py
+│   ├── cache.py
+│   ├── database.py
+│   ├── logger.py
+│   ├── notifications.py
+│   ├── validators.py
+│   └── __init__.py
+│
+├── assets/
+├── data/
+├── exports/
+├── logs/
+└── username checker/
 ```
 
-## Platform-Specific Rules
+---
 
-### Pinterest
-- Length: 3-30 characters
-- Allowed: letters, numbers, underscores
-- Cannot be all numbers
+## Discord Notifications
 
-### GitHub
-- Max length: 39 characters
-- Allowed: letters, numbers, hyphens
-- Cannot start/end with hyphen
-- No consecutive hyphens
+When a username becomes available, the webhook sends an embed containing:
 
-### Instagram
-- Max length: 30 characters
-- Allowed: letters, numbers, periods, underscores
-- Cannot start/end with period
-- No consecutive periods
-
-## Discord Webhook
-
-When a username becomes available, you'll receive a Discord notification with:
-- Username
-- Platforms where it's available
+- The username
+- Platforms where it is available
 - Direct links to claim
 - Timestamp of discovery
 
-Webhook messages now credit `@00ie` in the embed title.
+---
+
+## Accuracy Tips
+
+- Use a valid Instagram `sessionid` in Settings for better precision
+- Increase `jitter_min` / `jitter_max` when rate-limited
+- Reduce concurrent threads for Instagram-heavy runs
+- Use healthy rotating proxies
+- Re-check critical usernames before a final decision
+
+---
+
+## Known Limitations
+
+- Instagram checks can become unstable due to anti-bot behavior, endpoint changes, and temporary restrictions
+- Without authentication context, Instagram may return uncertain states more often
+- Rate limits can reduce precision and increase `Possibly Available` results
+
+---
+
+## Troubleshooting
+
+| Issue | Fix |
+|-------|-----|
+| Too many `Taken` / `Possibly Available` | Increase delay, reduce threads, rotate proxies, retry later |
+| Rate limit popup appears | Pause checks, increase jitter, wait for cooldown, then retry |
+| Webhook not sending | Validate webhook URL and check network access |
+| Different title bar behavior by OS | Expected — depends on your window manager or macOS Tk version |
+
+---
+
+## OS Support
+
+| OS      | Status               |
+|---------|----------------------|
+| Windows | Full support, best visual integration |
+| macOS   | Supported  |
+| Linux   | Supported  |
+
+---
+
+## Privacy
+
+- Proxy, session, and runtime files are stored locally
+- Sensitive local artifacts are excluded via `.gitignore`
+- Review `config/settings.json` before publishing if you changed local values
+
+---
 
 ## Changelog
 
-### Version 1.0.0
+### 1.0.6
+- **Instagram robustness** — Multiple fallback methods (API endpoint, HTML profile, mobile API, web search) to reduce false positives and handle endpoint instability
+- **Rate limit detection** — Detects HTTP 429 responses across Instagram endpoints with a popup warning
+- **Configurable verification delay** — Instagram jitter delay (min/max) now adjustable in the GUI settings
+- **Consistent results logging** — Bulk check output appears in the Results Log with color-coded tags (available / possible / taken)
+- **Webhook improvements** — Better platform filtering and status-based embed colors
 
-- UI refinements:
-    - Replaced the static sidebar layout with a resizable divider on the Bulk tab (uses a PanedWindow) so the sidebar no longer leaves an empty vertical line and can be resized by the user.
-    - Eliminated thin border artifacts between adjacent panels by removing highlight borders on card containers.
-    - Sidebar scroll area was fixed so its scrollbar stays flush with the panel and content resizes correctly.
-- Usability:
-    - Console and main panel now expand reliably when the window is resized.
-- Performance:
-    - Kept existing batch-update optimizations for log rendering and proxy list population.
+### 1.0.5
+- Compiled regex patterns to reduce CPU overhead on validation
+- Batch blacklist file saving (every 20 proxies) instead of per-proxy saves, reducing I/O by ~95%
+- Discord webhook notifications now run in a background thread queue
+- Replaced sleep loop with `threading.Event` for instant stop response in monitor mode
+- Jitter delay now only applied to Instagram checks, eliminating unnecessary delays elsewhere
+- Reusable header templates to reduce per-request memory allocations
+- Usernames under 4 characters return "Possibly Available" to reduce false positives
+- Optimized proxy filtering and random selection logic
+
+### 1.0.4
+- Improved layout density
+- Optimized batch updates and rendering
+- Code cleanup
+
+### 1.0.3
+- Optimized core engine and proxy checker
+- Added session ID support for improved Instagram verification
+- Enhanced error handling in platform checkers
+- Better visual feedback and UI responsiveness
+
+### 1.0.2
+- Reduced UI freezes when switching tabs by batching heavy updates and limiting global bindings
+- Proxy table population is now incremental to avoid blocking the main thread
+
+### 1.0.1
+- Dedicated **PROXIES** tab with a sortable table (Proxy / Status)
+- Visual status column: "BAD" label in red for blacklisted proxies
+- Buttons to remove a single proxy, remove all bad proxies, and clear the blacklist
+- Export button for `good_proxies.txt` and `bad_proxies.txt`
+- Proxies validated at startup if `proxies.txt` exists
+- SOCKS proxies auto-marked as bad if PySocks is not installed
+- Proxy checker automatically integrates with the blacklist
+
+### 1.0.0
+- Initial release
+- Bulk username checker with multi-platform support
+- Sniper monitor with configurable interval
 - Discord webhook integration
-- Proxy support
+- Proxy support with rotation
 - Export functionality
+- Dark-themed Tkinter UI with resizable sidebar
 
-### Version 1.0.1
-- Improved proxy management UI and features:
-    - Dedicated "PROXIES" tab with a table (Proxy / Status).
-    - Visual status column showing "BAD" for blacklisted proxies (red text).
-    - Button to remove a single selected proxy (with confirmation).
-    - Button to clear the blacklist (with confirmation).
-    - New button "REMOVE BAD" to remove all blacklisted proxies from your proxy list at once (with confirmation).
-    - Export button to write `good_proxies.txt` and `bad_proxies.txt` from the GUI.
-    - Proxies are validated at application startup (background task) if `proxies.txt` exists.
-    - Supports SOCKS proxies when `requests[socks]` (PySocks) is installed; SOCKS proxies will be auto-marked as bad if SOCKS support is missing.
-    - Proxy checker now integrates with the blacklist automatically (bad proxies marked, good proxies unmarked).
-
-## Version 1.0.2
-
-- **UI responsiveness**: Reduced UI freezes when switching tabs by batching heavy UI updates and limiting global bindings.
-- **Proxy list optimization**: Proxy table population is now incremental to avoid blocking the main thread.
-- **Minor UI tweaks**: Version label updated and README adjusted.
-
-
-## Version 1.0.3
-
-- **Performance improvements**: Optimized core engine and proxy checker.
-- **Instagram verification**: Added session ID support for improved username verification on Instagram.
-- **Stability**: Enhanced error handling in platform checkers.
-- **UI refinements**: Better visual feedback and responsiveness.
-
-## Version 1.0.4
-
-- **UI refinements**: Improved layout density.
-- **Performance**: Optimized batch updates and rendering.
-- **Code cleanup**: Removed all inline comments for cleaner codebase.
-
-## Version 1.0.5
-
-- **Performance optimization**: Compiled regex patterns to reduce CPU overhead on validation.
-- **Proxy management**: Implemented batch file saving for blacklist (every 20 proxies) instead of per-proxy saves, reducing I/O by ~95%.
-- **Async webhooks**: Discord webhook notifications now run in a background thread queue, preventing check delays.
-- **Monitor optimization**: Replaced sleep loop with threading.Event for instant stop response in monitor mode.
-- **Reduced jitter**: Jitter delay now only applied to Instagram checks (where needed), eliminating unnecessary delays for Pinterest/GitHub.
-- **Header caching**: Reuse header templates instead of recreating per request, reducing memory allocations.
-- **Short username handling**: Usernames under 4 characters now return "Possibly Available" status to reduce false positives.
-- **Improved proxy selection**: Optimized proxy filtering and random selection logic.
+---
 
 ## Credits
 
-- **Sun Valley ttk theme** by `rdbende` (MIT License): https://github.com/rdbende/sun-valley-ttk-theme
+- **Sun Valley ttk theme** by `rdbende` (MIT License) — https://github.com/rdbende/sun-valley-ttk-theme
 
-## Support & Contact
+---
+
+## Contact
 
 - **Discord**: [tlmw](https://discord.com/users/tlmw)
 - **Telegram**: [@feicoes](https://t.me/feicoes)
-- **Discord Server**: [Join Server](https://discord.gg/2asv4rEhGh)
+- **Discord Server**: [Join](https://discord.gg/2asv4rEhGh)
 - **GitHub**: [@00ie](https://github.com/00ie)

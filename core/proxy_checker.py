@@ -3,11 +3,19 @@ import requests
 import os
 from typing import List, Tuple
 from core.platforms import ProxyManager
+from config.paths import PROXIES_FILE, GOOD_PROXIES_FILE, BAD_PROXIES_FILE, ensure_runtime_layout
 
 DEFAULT_TEST_URL = "https://httpbin.org/ip"
 
 
-def load_proxies(path: str = "proxies.txt") -> List[str]:
+def load_proxies(path: str = None) -> List[str]:
+    if path is None:
+        try:
+            from core.platforms import ProxyManager
+            path = ProxyManager().proxies_file
+        except Exception:
+            path = PROXIES_FILE
+
     if not os.path.exists(path):
         return []
     with open(path, "r", encoding="utf-8") as f:
@@ -54,7 +62,16 @@ def check_proxies(proxies: List[str], workers: int = 10, test_url: str = DEFAULT
     return results
 
 
-def save_results(results: List[Tuple[str, bool, str]], good_path: str = "good_proxies.txt", bad_path: str = "bad_proxies.txt"):
+def save_results(results: List[Tuple[str, bool, str]], good_path: str = None, bad_path: str = None):
+    if good_path is None or bad_path is None:
+        try:
+            from core.platforms import ProxyManager
+            base = os.path.dirname(ProxyManager().proxies_file)
+        except Exception:
+            base = os.path.dirname(PROXIES_FILE)
+        good_path = good_path or os.path.join(base, os.path.basename(GOOD_PROXIES_FILE))
+        bad_path = bad_path or os.path.join(base, os.path.basename(BAD_PROXIES_FILE))
+
     good = [p for p, ok, _ in results if ok]
     bad = [p for p, ok, _ in results if not ok]
     if good:
@@ -81,9 +98,10 @@ def print_summary(results: List[Tuple[str, bool, str]]):
 
 if __name__ == "__main__":
     import argparse
+    ensure_runtime_layout()
 
-    parser = argparse.ArgumentParser(description="Check proxies listed in proxies.txt")
-    parser.add_argument("--file", "-f", default="proxies.txt", help="Path to proxies file (one per line)")
+    parser = argparse.ArgumentParser(description="Check proxies listed in the runtime proxy file")
+    parser.add_argument("--file", "-f", default=PROXIES_FILE, help="Path to proxies file (one per line)")
     parser.add_argument("--workers", "-w", type=int, default=20, help="Number of concurrent workers")
     parser.add_argument("--test-url", "-u", default=DEFAULT_TEST_URL, help="URL to test through proxy")
     parser.add_argument("--timeout", "-t", type=int, default=8, help="Timeout seconds for each test")
@@ -98,10 +116,4 @@ if __name__ == "__main__":
     results = check_proxies(proxies, workers=args.workers, test_url=args.test_url, timeout=args.timeout)
     print_summary(results)
     save_results(results)
-    print("Saved good_proxies.txt and bad_proxies.txt")
-
-    print(f"Testing {len(proxies)} proxies against {args.test_url} with {args.workers} workers...")
-    results = check_proxies(proxies, workers=args.workers, test_url=args.test_url, timeout=args.timeout)
-    print_summary(results)
-    save_results(results)
-    print("Saved good_proxies.txt and bad_proxies.txt")
+    print(f"Saved {GOOD_PROXIES_FILE} and {BAD_PROXIES_FILE}")

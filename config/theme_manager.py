@@ -11,7 +11,7 @@ try:
     import sv_ttk
     SV_TTK_AVAILABLE = True
     
-except ImportError as e:
+except ImportError:
     SV_TTK_AVAILABLE = False
     
 
@@ -34,7 +34,6 @@ class ThemeManager:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.current_theme = None
-        self._loaded_tcl_themes = set()
         
     
     def apply_theme(self, theme_key: str) -> bool:
@@ -85,6 +84,8 @@ class ThemeManager:
             ttk.Style().theme_use(f'sun-valley-{mode}')
     
     def toggle_mode(self):
+        if not self.current_theme:
+            self.current_theme = 'sun-valley-dark'
         if 'dark' in self.current_theme:
             new_theme = self.current_theme.replace('dark', 'light')
         else:
@@ -99,6 +100,8 @@ class ThemeManager:
         return self.current_theme
     
     def is_dark_mode(self) -> bool:
+        if not self.current_theme:
+            return True
         return 'dark' in self.current_theme
 
 

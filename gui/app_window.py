@@ -22,17 +22,23 @@ from config.settings import settings
 from config.theme_manager import get_theme_manager
 from core.platforms import ProxyManager
 from core.proxy_checker import check_proxies
+from utils.logger import get_logger
+from config.paths import EXPORTS_DIR, ensure_runtime_layout
 
 
 class AppWindow:
     
     def __init__(self):
+        self.logger = get_logger("AppWindow")
         
         
         self.root = tk.Tk()
+        ensure_runtime_layout()
         self.root.title("Username Checker")
         self.root.geometry("1000x700")
         self.root.minsize(950, 650)
+        self.root.rowconfigure(0, weight=1)
+        self.root.columnconfigure(0, weight=1)
         
         try:
             self.root.tk.call('tk', 'useinputmethods', '-displayof', self.root, False)
@@ -159,23 +165,38 @@ class AppWindow:
             pass
         except Exception:
             pass
+        self._apply_dark_titlebar()
         
         self.engine = AuditEngine()
+        self.proxy_mgr = ProxyManager()
         self.targets: List[str] = []
         self.results_cache: List[Dict[str, Any]] = []
+        self.current_bulk_stopped = False
+        self.live_export_path: Optional[str] = None
+        self.live_jsonl_path: Optional[str] = None
         self.session_id = str(uuid.uuid4())
         self.stat_total = tk.IntVar(value=0)
         self.stat_avail = tk.IntVar(value=0)
         self.stat_rate = tk.StringVar(value="0%")
         self.stat_speed = tk.StringVar(value="0/s")
+        self.platform_stats_var = tk.StringVar(value="IG A:0 P:0 T:0 U:0 | GH A:0 P:0 T:0 U:0 | PIN A:0 P:0 T:0 U:0")
+        self.platform_counters = {
+            "instagram": {"available": 0, "possibly_available": 0, "taken": 0, "unknown": 0, "rate_limit": 0},
+            "github": {"available": 0, "possibly_available": 0, "taken": 0, "unknown": 0, "rate_limit": 0},
+            "pinterest": {"available": 0, "possibly_available": 0, "taken": 0, "unknown": 0, "rate_limit": 0}
+        }
         self.hide_taken = tk.BooleanVar(value=False)
         self.auto_export = tk.BooleanVar(value=False)
         self.use_proxies = tk.BooleanVar(value=settings.get("use_proxies", False))
         self.desktop_notifications = tk.BooleanVar(value=True)
         self.current_theme = tk.StringVar(value="dark")
+        self.mode_var = tk.StringVar(value=settings.get("mode", "safe"))
         self.instagram_session_cookie = ""
+        self.instagram_session_valid_var = tk.StringVar(value="Session cookie: not checked")
         self.start_time: Optional[float] = None
         self.last_check_time: Optional[float] = None
+        self.rate_limit_popup = None
+        self._scroll_areas = []
         self.load_icon()
         
         self.setup_shortcuts()
@@ -183,6 +204,7 @@ class AppWindow:
         self.build_ui()
         
         self._disable_focus_globally(self.root)
+        self._recover_last_session_file()
         
         db.create_session(self.session_id, {
             'platforms': self.get_enabled_platforms(),
@@ -191,8 +213,12 @@ class AppWindow:
         try:
             self._log_to_console("Username Checker initialized!", "success")
             self._log_to_console(f"Session ID: {self.session_id[:8]}...", "info")
+            self._log_startup_health()
         except Exception as e:
-            pass
+            self.logger.exception("ui_start_log_failed")
+
+        self._start_proxy_watcher()
+
         self.root.after(60000, self.auto_save)
     
     def _disable_focus_globally(self, widget):
@@ -222,6 +248,41 @@ class AppWindow:
                 return
             except:
                 pass
+
+    def _start_proxy_watcher(self):
+        self._proxy_mtime = None
+        self.root.after(1000, self._check_proxy_file)
+
+    def _check_proxy_file(self):
+        try:
+            path = self.proxy_mgr.proxies_file
+            if os.path.exists(path):
+                mtime = os.path.getmtime(path)
+                if self._proxy_mtime is None:
+                    self._proxy_mtime = mtime
+                elif mtime != self._proxy_mtime:
+                    self._proxy_mtime = mtime
+                    self.proxy_mgr.load_proxies()
+                    self.refresh_proxy_list()
+                    Toast.show(self.root, "Proxies file updated, reloaded", "info")
+                    try:
+                        proxies = list(self.proxy_mgr.proxies)
+                        if proxies:
+                            t = threading.Thread(
+                                target=check_proxies,
+                                args=(proxies,),
+                                kwargs={
+                                    'workers': min(50, max(5, len(proxies)))
+                                },
+                                daemon=True
+                            )
+                            t.start()
+                    except Exception:
+                        self.logger.exception("proxy_background_check_failed")
+        except Exception:
+            self.logger.exception("proxy_watcher_failed")
+        finally:
+            self.root.after(2000, self._check_proxy_file)
         paths = ["icon.jpg", "assets/icon.jpg", "image.jpg", "icon.png", "assets/icon.png"]
         for path in paths:
             if os.path.exists(path):
@@ -238,6 +299,8 @@ class AppWindow:
         self.root.bind_all('<Control-Shift-R>', lambda e: self.stop_audit())
         self.root.bind_all('<Control-q>', lambda e: self.on_closing())
         self.root.bind_all('<F5>', lambda e: self.refresh_ui())
+        self.root.bind_all("<MouseWheel>", self._on_global_mousewheel, add="+")
+        self.root.bind("<FocusIn>", lambda e: self.root.after(10, self._apply_dark_titlebar), add="+")
         
         tab_bindings = {
             '<Control-1>': 0, '<Control-2>': 1, '<Control-3>': 2,
@@ -258,9 +321,35 @@ class AppWindow:
         self.root.bind('<B1-Motion>', self._on_dragging, add=True)
         self.root.bind('<Unmap>', self._on_minimize, add=True)
         self.root.bind('<Map>', self._on_restore, add=True)
+
+    def _register_scroll_canvas(self, canvas, tab_widget):
+        self._scroll_areas.append({"canvas": canvas, "tab": tab_widget})
+
+    def _on_global_mousewheel(self, event):
+        try:
+            current_tab = self.tab_control.select() if hasattr(self, "tab_control") else None
+            kept = []
+            for area in self._scroll_areas:
+                canvas = area["canvas"]
+                if canvas.winfo_exists():
+                    kept.append(area)
+            self._scroll_areas = kept
+            for area in reversed(self._scroll_areas):
+                canvas = area["canvas"]
+                tab_widget = area["tab"]
+                if current_tab and str(tab_widget) != current_tab:
+                    continue
+                x = canvas.winfo_rootx()
+                y = canvas.winfo_rooty()
+                w = canvas.winfo_width()
+                h = canvas.winfo_height()
+                if x <= event.x_root <= x + w and y <= event.y_root <= y + h:
+                    canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+                    return "break"
+        except Exception:
+            pass
     
     def _select_tab(self, idx):
-        """Efficiently select tab without triggering full rebuild"""
         try:
             self.tab_control.select(idx)
         except:
@@ -304,6 +393,7 @@ class AppWindow:
             self._suspend_rendering = False
             
             self.root.update_idletasks()
+        self.root.after(10, self._apply_dark_titlebar)
     
     def build_ui(self):
         self.create_header()
@@ -401,6 +491,8 @@ class AppWindow:
         self.tab_control.add(self.tab_about, text='ABOUT')
         
         self.tab_control.pack(fill=tk.BOTH, expand=True, pady=20)
+        self.tab_control.rowconfigure(0, weight=1)
+        self.tab_control.columnconfigure(0, weight=1)
         
         self._built_tabs = set()
         
@@ -434,6 +526,8 @@ class AppWindow:
     def build_bulk_tab(self):
         container = ttk.Frame(self.tab_bulk)
         container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        container.rowconfigure(0, weight=1)
+        container.columnconfigure(0, weight=1)
 
         paned = tk.PanedWindow(container, orient=tk.HORIZONTAL, sashwidth=4, sashrelief=tk.FLAT, bg='#1c1c1c', bd=0, relief=tk.FLAT)
         paned.pack(fill=tk.BOTH, expand=True)
@@ -455,9 +549,7 @@ class AppWindow:
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        self._register_scroll_canvas(canvas, self.tab_bulk)
         config_frame = ttk.Frame(sidebar, style='Card.TFrame')
         config_frame.pack(fill=tk.X, pady=(0, 5))
         
@@ -582,6 +674,12 @@ class AppWindow:
             actions_frame,
             text="Export results",
             command=self.export_results
+        ).pack(fill=tk.X, pady=2)
+        
+        ttk.Button(
+            actions_frame,
+            text="Recheck possibly",
+            command=self.recheck_possibly_available
         ).pack(fill=tk.X, pady=2)
         
         paned.add(sidebar_container)
@@ -722,7 +820,6 @@ class AppWindow:
     def build_proxies_tab(self):
         container = ttk.Frame(self.tab_proxies)
         container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        self.proxy_mgr = ProxyManager()
         proxy_frame = ttk.Frame(container, style='Card.TFrame')
         proxy_frame.pack(fill=tk.BOTH, expand=True)
         
@@ -808,8 +905,23 @@ class AppWindow:
     def build_settings_tab(self):
         container = ttk.Frame(self.tab_settings)
         container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        canvas = tk.Canvas(container, bg="#1c1c1c", highlightthickness=0, takefocus=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        content_root = ttk.Frame(canvas)
+
+        content_root.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        window_id = canvas.create_window((0, 0), window=content_root, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self._register_scroll_canvas(canvas, self.tab_settings)
+        container.bind("<Configure>", lambda e: canvas.itemconfig(window_id, width=e.width - 16))
         
-        instagram_frame = ttk.Frame(container, style='Card.TFrame')
+        instagram_frame = ttk.Frame(content_root, style='Card.TFrame')
         instagram_frame.pack(fill=tk.X, pady=(0, 20))
         
         instagram_content = ttk.Frame(instagram_frame, padding=20)
@@ -838,6 +950,17 @@ class AppWindow:
         self.instagram_cookie_entry = ttk.Entry(instagram_content, show="*", takefocus=False)
         self.instagram_cookie_entry.pack(fill=tk.X, pady=(0, 10))
         self.instagram_cookie_entry.bind('<KeyRelease>', lambda e: self._update_instagram_cookie())
+        ttk.Button(
+            instagram_content,
+            text="Validate session",
+            command=self._validate_instagram_session,
+            style='Accent.TButton'
+        ).pack(anchor='w', pady=(0, 8))
+        ttk.Label(
+            instagram_content,
+            textvariable=self.instagram_session_valid_var,
+            font=('Segoe UI', 9)
+        ).pack(anchor='w', pady=(0, 8))
         
         ttk.Label(
             instagram_content,
@@ -848,7 +971,7 @@ class AppWindow:
         
         ttk.Separator(instagram_content, orient='horizontal').pack(fill=tk.X, pady=15)
         
-        general_frame = ttk.Frame(container, style='Card.TFrame')
+        general_frame = ttk.Frame(content_root, style='Card.TFrame')
         general_frame.pack(fill=tk.X, pady=(0, 20))
         
         general_content = ttk.Frame(general_frame, padding=20)
@@ -860,15 +983,70 @@ class AppWindow:
             font=('Segoe UI', 13, 'bold')
         ).pack(anchor='w', pady=(0, 15))
         
+
         ttk.Label(
             general_content,
             text="Thread Count (Concurrent Checks)",
             font=('Segoe UI', 12, 'bold')
         ).pack(anchor='w', pady=(0, 8))
-        
+
         self.threads_entry = ttk.Entry(general_content, takefocus=False)
-        self.threads_entry.pack(fill=tk.X, pady=(0, 20))
+        self.threads_entry.pack(fill=tk.X, pady=(0, 8))
         self.threads_entry.insert(0, str(settings.get("threads", 10)))
+
+        ttk.Label(
+            general_content,
+            text="Mode",
+            font=('Segoe UI', 12, 'bold')
+        ).pack(anchor='w', pady=(8, 4))
+        self.mode_combo = ttk.Combobox(
+            general_content,
+            textvariable=self.mode_var,
+            values=["safe", "fast"],
+            state='readonly',
+            width=16,
+            takefocus=False
+        )
+        self.mode_combo.pack(anchor='w', pady=(0, 8))
+
+        ttk.Label(
+            general_content,
+            text="Instagram Check Delay (seconds)",
+            font=('Segoe UI', 12, 'bold')
+        ).pack(anchor='w', pady=(10, 4))
+
+        delay_frame = ttk.Frame(general_content)
+        delay_frame.pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Label(delay_frame, text="Min:").pack(side=tk.LEFT)
+        self.jitter_min_entry = ttk.Entry(delay_frame, width=6, takefocus=False)
+        self.jitter_min_entry.pack(side=tk.LEFT, padx=(2, 10))
+        self.jitter_min_entry.insert(0, str(settings.get("jitter_min", 0.5)))
+
+        ttk.Label(delay_frame, text="Max:").pack(side=tk.LEFT)
+        self.jitter_max_entry = ttk.Entry(delay_frame, width=6, takefocus=False)
+        self.jitter_max_entry.pack(side=tk.LEFT, padx=(2, 10))
+        self.jitter_max_entry.insert(0, str(settings.get("jitter_max", 1.5)))
+
+        ttk.Label(
+            general_content,
+            text="Recommended: Min 0.5s, Max 1.5s. Lower values = faster, but higher risk of rate limit.",
+            font=('Segoe UI', 9),
+            foreground="#FFA500"
+        ).pack(anchor='w', pady=(0, 10))
+
+        def save_jitter_settings(*args):
+            try:
+                min_val = float(self.jitter_min_entry.get())
+                max_val = float(self.jitter_max_entry.get())
+                if min_val < 0: min_val = 0
+                if max_val < min_val: max_val = min_val
+                settings.set("jitter_min", min_val)
+                settings.set("jitter_max", max_val)
+            except Exception:
+                pass
+        self.jitter_min_entry.bind('<FocusOut>', save_jitter_settings)
+        self.jitter_max_entry.bind('<FocusOut>', save_jitter_settings)
         
         ttk.Checkbutton(
             general_content,
@@ -890,7 +1068,6 @@ class AppWindow:
         
         self.theme_var = tk.StringVar(value=self.theme_manager.get_current_theme())
         
-        theme_names = [config['name'] for config in self.theme_manager.THEMES.values()]
         theme_keys = list(self.theme_manager.THEMES.keys())
         
         self.theme_combo = ttk.Combobox(
@@ -917,7 +1094,6 @@ class AppWindow:
         ).pack(fill=tk.X, pady=(20, 0))
     
     def _create_clickable_link(self, parent, text, url, padding=(0, 0)):
-        """Create a clickable link label that opens URL in browser"""
         link_label = tk.Label(
             parent,
             text=text,
@@ -943,7 +1119,17 @@ class AppWindow:
     def build_webhook_tab(self):
         container = ttk.Frame(self.tab_webhook)
         container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        webhook_frame = ttk.Frame(container, style='Card.TFrame')
+        canvas = tk.Canvas(container, bg="#1c1c1c", highlightthickness=0, takefocus=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        content_root = ttk.Frame(canvas)
+        content_root.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        window_id = canvas.create_window((0, 0), window=content_root, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._register_scroll_canvas(canvas, self.tab_webhook)
+        container.bind("<Configure>", lambda e: canvas.itemconfig(window_id, width=e.width - 16))
+        webhook_frame = ttk.Frame(content_root, style='Card.TFrame')
         webhook_frame.pack(fill=tk.X, pady=(0, 20))
         
         webhook_content = ttk.Frame(webhook_frame, padding=20)
@@ -996,7 +1182,17 @@ class AppWindow:
     def build_about_tab(self):
         container = ttk.Frame(self.tab_about)
         container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        about_frame = ttk.Frame(container, style='Card.TFrame')
+        canvas = tk.Canvas(container, bg="#1c1c1c", highlightthickness=0, takefocus=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        content_root = ttk.Frame(canvas)
+        content_root.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        window_id = canvas.create_window((0, 0), window=content_root, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._register_scroll_canvas(canvas, self.tab_about)
+        container.bind("<Configure>", lambda e: canvas.itemconfig(window_id, width=e.width - 16))
+        about_frame = ttk.Frame(content_root, style='Card.TFrame')
         about_frame.pack(fill=tk.X)
         
         about_content = ttk.Frame(about_frame, padding=20)
@@ -1010,7 +1206,7 @@ class AppWindow:
         
         ttk.Label(
             about_content,
-            text="Username Checker v1.0.5",
+            text="Username Checker v1.0.6",
             font=('Segoe UI', 14, 'bold')
         ).pack(anchor='w')
         
@@ -1071,8 +1267,13 @@ class AppWindow:
         
         ttk.Label(
             footer_content,
-            text="v1.0.5",
+            text="v1.0.6",
             font=('Segoe UI', 9)
+        ).pack(side=tk.RIGHT, padx=8)
+        ttk.Label(
+            footer_content,
+            textvariable=self.platform_stats_var,
+            font=('Consolas', 9)
         ).pack(side=tk.RIGHT, padx=8)
     
     def generate_usernames(self):
@@ -1095,9 +1296,14 @@ class AppWindow:
             self.targets = []
             chars = string.ascii_lowercase + string.digits
             
-            for _ in range(count):
+            while len(self.targets) < count:
                 username = "".join(random.choices(chars, k=length))
+                if username.isdigit():
+                    continue
+                if len(set(username)) <= 2:
+                    continue
                 self.targets.append(username)
+            self.targets = list(dict.fromkeys(self.targets))
             
             self._log_to_console(f"Generated {len(self.targets)} usernames", "success")
             Toast.show(self.root, f"Generated {len(self.targets)} usernames", "success")
@@ -1116,34 +1322,78 @@ class AppWindow:
         
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
-                usernames = [line.strip() for line in f if line.strip()]
-            
+                raw = [line.strip().lower() for line in f if line.strip()]
+            usernames = list(dict.fromkeys(raw))
             self.targets = usernames
             self._log_to_console(f"Imported {len(usernames)} usernames from file", "success")
-            Toast.show(self.root, f"Imported {len(usernames)} usernames", "success")
+            Toast.show(self.root, f"Imported {len(usernames)} unique usernames", "success")
             
         except Exception as e:
             Toast.show(self.root, f"Error importing file: {str(e)}", "error")
     
     def start_bulk(self):
+        self.targets = list(dict.fromkeys([(u or "").strip().lower() for u in self.targets if (u or "").strip()]))
         if not self.targets:
             Toast.show(self.root, "No usernames to check! Generate or import first.", "warning")
             return
+        if self.instagram_session_cookie:
+            try:
+                checker = self.engine.checkers.get("instagram")
+                if checker and checker.validate_session_cookie():
+                    self.instagram_session_valid_var.set("Session cookie: valid")
+                else:
+                    self.instagram_session_valid_var.set("Session cookie: invalid or expired")
+            except Exception:
+                self.instagram_session_valid_var.set("Session cookie: validation failed")
+        self.current_bulk_stopped = False
         self.save_config()
         self.stat_total.set(0)
         self.stat_avail.set(0)
         self.results_cache.clear()
+        self.platform_counters = {
+            "instagram": {"available": 0, "possibly_available": 0, "taken": 0, "unknown": 0, "rate_limit": 0},
+            "github": {"available": 0, "possibly_available": 0, "taken": 0, "unknown": 0, "rate_limit": 0},
+            "pinterest": {"available": 0, "possibly_available": 0, "taken": 0, "unknown": 0, "rate_limit": 0}
+        }
+        self.platform_stats_var.set("IG A:0 P:0 T:0 U:0 | GH A:0 P:0 T:0 U:0 | PIN A:0 P:0 T:0 U:0")
         self.start_time = datetime.now().timestamp()
         self.bulk_start_btn.config(state='disabled')
         self.status_label.config(text="Bulk check running...")
         self.progress_bar['value'] = 0
         self.progress_bar['maximum'] = len(self.targets)
+        self.live_export_path = os.path.join(EXPORTS_DIR, f"session_{self.session_id}.csv")
+        self.live_jsonl_path = os.path.join(EXPORTS_DIR, f"session_{self.session_id}.jsonl")
+        try:
+            os.makedirs(EXPORTS_DIR, exist_ok=True)
+            with open(self.live_export_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["timestamp", "username", "status", "platforms"])
+            open(self.live_jsonl_path, "w", encoding="utf-8").close()
+        except Exception:
+            self.logger.exception("live_export_init_failed")
         thread = threading.Thread(target=self.run_bulk_check, daemon=True)
         thread.start()
+
+    def recheck_possibly_available(self):
+        candidates = []
+        for item in self.results_cache:
+            poss = item.get("possibly_available", [])
+            if poss:
+                candidates.append((item.get("username") or "").strip().lower())
+        candidates = list(dict.fromkeys([c for c in candidates if c]))
+        if not candidates:
+            Toast.show(self.root, "No possibly available usernames to recheck", "warning")
+            return
+        self.targets = candidates
+        Toast.show(self.root, f"Loaded {len(candidates)} usernames for recheck", "info")
+        self.start_bulk()
     
     def run_bulk_check(self):
         self.engine.start_bulk(self.targets, self.handle_check_result)
-        self.root.after(0, self.finish_bulk_check)
+        if self.current_bulk_stopped:
+            self.root.after(0, self.finish_stopped_check)
+        else:
+            self.root.after(0, self.finish_bulk_check)
     
     def handle_check_result(self, data: Dict[str, Any]):
         self.root.after(0, lambda: self._update_stats(data))
@@ -1151,31 +1401,47 @@ class AppWindow:
         timestamp = data['timestamp']
         available = data.get('available_on', [])
         possibly_available = data.get('possibly_available', [])
-        
-        if available or possibly_available:
+        rate_limit_token = next((val for val in available + possibly_available if str(val).startswith("RATE_LIMIT")), None)
+        if rate_limit_token is not None:
+            platform = "instagram"
+            token = str(rate_limit_token)
+            if ":" in token:
+                platform = token.split(":", 1)[1].strip() or "instagram"
+            self.root.after(0, lambda p=platform: self._show_rate_limit_popup(p))
+            self.engine.stop()
+            self.current_bulk_stopped = True
+            self.root.after(0, lambda p=platform: self.status_label.config(text=f"Paused: {p.title()} rate limit detected"))
+            return
+        if available:
+            platforms = ", ".join([p.upper() for p in available])
+            message = f"[{timestamp}] {username:<15} | Available on: {platforms}"
+            tag = "success"
             self.results_cache.append(data)
-            if available:
-                platforms = ", ".join([p.upper() for p in available])
-                message = f"[{timestamp}] {username:<15} | Available on: {platforms}"
-                tag = "success"
-            else:
-                platforms = ", ".join([p.upper() for p in possibly_available])
-                message = f"[{timestamp}] {username:<15} | Possibly available on: {platforms}"
-                tag = "warning"
-            
             db.save_check_result(
                 username,
                 data['checked_platforms'],
-                available if available else possibly_available,
+                available,
                 self.session_id
             )
-            
             self.root.after(0, lambda m=message, t=tag: self._log_to_console(m, t))
-            
-            if self.desktop_notifications.get() and available:
+            self._append_live_result(username, timestamp, "available", available)
+            if self.desktop_notifications.get():
                 notification_manager.notify_username_available(username, available)
-            if self.auto_export.get() and available:
+            if self.auto_export.get():
                 self.quick_export_available()
+        elif possibly_available:
+            platforms = ", ".join([p.upper() for p in possibly_available])
+            message = f"[{timestamp}] {username:<15} | Possibly available on: {platforms}"
+            tag = "warning"
+            self.results_cache.append(data)
+            db.save_check_result(
+                username,
+                data['checked_platforms'],
+                possibly_available,
+                self.session_id
+            )
+            self.root.after(0, lambda m=message, t=tag: self._log_to_console(m, t))
+            self._append_live_result(username, timestamp, "possibly_available", possibly_available)
         else:
             if not self.hide_taken.get():
                 message = f"[{timestamp}] {username:<15} | Taken"
@@ -1186,13 +1452,14 @@ class AppWindow:
                 [],
                 self.session_id
             )
+            self._append_live_result(username, timestamp, "taken", [])
     
     def _update_stats(self, data: Dict[str, Any]):
-        """Batch stats updates to improve performance - update every 5 results instead of on each one"""
         new_total = self.stat_total.get() + 1
         self.stat_total.set(new_total)
-        
-        if data['available_on']:
+
+        available_values = [v for v in data.get('available_on', []) if not str(v).startswith("RATE_LIMIT")]
+        if available_values:
             new_avail = self.stat_avail.get() + 1
             self.stat_avail.set(new_avail)
         
@@ -1221,6 +1488,24 @@ class AppWindow:
         else:
             if new_total % 1 == 0:
                 self.progress_bar['value'] = new_total
+        self._update_platform_counters(data)
+
+    def _update_platform_counters(self, data: Dict[str, Any]):
+        statuses = data.get("platform_status", {}) or {}
+        for platform, status in statuses.items():
+            if platform not in self.platform_counters:
+                continue
+            if status not in self.platform_counters[platform]:
+                status = "unknown"
+            self.platform_counters[platform][status] += 1
+        ig = self.platform_counters["instagram"]
+        gh = self.platform_counters["github"]
+        pin = self.platform_counters["pinterest"]
+        self.platform_stats_var.set(
+            f"IG A:{ig['available']} P:{ig['possibly_available']} T:{ig['taken']} U:{ig['unknown']} | "
+            f"GH A:{gh['available']} P:{gh['possibly_available']} T:{gh['taken']} U:{gh['unknown']} | "
+            f"PIN A:{pin['available']} P:{pin['possibly_available']} T:{pin['taken']} U:{pin['unknown']}"
+        )
     
     def finish_bulk_check(self):
         self.bulk_start_btn.config(state='normal')
@@ -1244,6 +1529,7 @@ class AppWindow:
             pass
     
     def stop_audit(self):
+        self.current_bulk_stopped = True
         self.engine.stop()
         self.bulk_start_btn.config(state='normal')
         if hasattr(self, 'monitor_btn'):
@@ -1374,8 +1660,8 @@ class AppWindow:
     
     def quick_export_available(self):
         try:
-            os.makedirs('exports', exist_ok=True)
-            filename = f"exports/available_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            os.makedirs(EXPORTS_DIR, exist_ok=True)
+            filename = os.path.join(EXPORTS_DIR, f"available_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
             
             with open(filename, 'w', encoding='utf-8') as f:
                 for item in self.results_cache:
@@ -1385,7 +1671,6 @@ class AppWindow:
             pass
     
     def refresh_proxy_list(self):
-        """Refresh proxy list with incremental loading for better performance"""
         for item in self.proxy_tree.get_children():
             self.proxy_tree.delete(item)
         
@@ -1493,12 +1778,12 @@ class AppWindow:
             good = [p for p in self.proxy_mgr.proxies if not self.proxy_mgr.is_blacklisted(p)]
             bad = [p for p in self.proxy_mgr.proxies if self.proxy_mgr.is_blacklisted(p)]
             
-            os.makedirs('exports', exist_ok=True)
+            os.makedirs(EXPORTS_DIR, exist_ok=True)
             
-            with open('exports/good_proxies.txt', 'w') as f:
+            with open(os.path.join(EXPORTS_DIR, 'good_proxies.txt'), 'w') as f:
                 f.write('\n'.join(good))
             
-            with open('exports/bad_proxies.txt', 'w') as f:
+            with open(os.path.join(EXPORTS_DIR, 'bad_proxies.txt'), 'w') as f:
                 f.write('\n'.join(bad))
             
             Toast.show(self.root, f"Exported {len(good)} good and {len(bad)} bad proxies", "success")
@@ -1506,11 +1791,10 @@ class AppWindow:
             Toast.show(self.root, f"Export failed: {str(e)}", "error")
     
     def save_config(self):
-        for platform, var in self.platform_vars.items():
-            settings.set(f"platforms.{platform}", var.get())
-        
-        settings.set("use_proxies", self.use_proxies.get())
-        settings.save()
+        updates = {f"platforms.{platform}": var.get() for platform, var in self.platform_vars.items()}
+        updates["use_proxies"] = self.use_proxies.get()
+        updates["mode"] = self.mode_var.get()
+        settings.set_many(updates)
         self.engine.refresh_settings()
     
     def save_settings(self):
@@ -1520,20 +1804,22 @@ class AppWindow:
             if not valid:
                 Toast.show(self.root, f"Invalid webhook URL: {error}", "error")
                 return
-            settings.set("webhook_url", webhook)
+            webhook_value = webhook
         else:
-            settings.set("webhook_url", "")
+            webhook_value = ""
         
         threads_str = self.threads_entry.get().strip() if hasattr(self, 'threads_entry') else "10"
         valid, error = InputValidator.validate_number(threads_str, 1, 100)
         if not valid:
             Toast.show(self.root, f"Invalid thread count: {error}", "error")
             return
-        settings.set("threads", int(threads_str))
-        
-        settings.set("theme", self.theme_manager.get_current_theme())
-        
-        settings.save()
+        settings.set_many({
+            "webhook_url": webhook_value,
+            "threads": int(threads_str),
+            "theme": self.theme_manager.get_current_theme(),
+            "mode": self.mode_var.get(),
+            "instagram_threads": 2 if self.mode_var.get() == "safe" else 4
+        })
         self.engine.refresh_settings()
         Toast.show(self.root, "Settings saved successfully!", "success")
 
@@ -1556,8 +1842,7 @@ class AppWindow:
             if response.status_code >= 400:
                 Toast.show(self.root, f"Webhook test failed ({response.status_code})", "error")
                 return
-            settings.set("webhook_url", webhook)
-            settings.save()
+            settings.set_many({"webhook_url": webhook})
             Toast.show(self.root, "Webhook test sent successfully!", "success")
         except Exception as exc:
             Toast.show(self.root, f"Webhook test failed: {exc}", "error")
@@ -1593,8 +1878,21 @@ class AppWindow:
         self.instagram_session_cookie = self.instagram_cookie_entry.get()
         from core.platforms import set_instagram_session_cookie
         set_instagram_session_cookie(self.instagram_session_cookie)
-        
-        Toast.show(self.root, "Theme mode toggled!", "success")
+        self.instagram_session_valid_var.set("Session cookie: not checked")
+        Toast.show(self.root, "Instagram session cookie updated", "success")
+
+    def _validate_instagram_session(self):
+        try:
+            checker = self.engine.checkers.get("instagram")
+            if checker and checker.validate_session_cookie():
+                self.instagram_session_valid_var.set("Session cookie: valid")
+                Toast.show(self.root, "Instagram session is valid", "success")
+            else:
+                self.instagram_session_valid_var.set("Session cookie: invalid or expired")
+                Toast.show(self.root, "Instagram session is invalid", "warning")
+        except Exception:
+            self.instagram_session_valid_var.set("Session cookie: validation failed")
+            Toast.show(self.root, "Session validation failed", "error")
     
     def get_enabled_platforms(self) -> List[str]:
         return [p for p, var in self.platform_vars.items() if var.get()]
@@ -1603,13 +1901,112 @@ class AppWindow:
         if self.results_cache and self.auto_export.get():
             self.quick_export_available()
         self.root.after(60000, self.auto_save)
+
+    def finish_stopped_check(self):
+        self.bulk_start_btn.config(state='normal')
+        self.status_label.config(text="Stopped")
+        self.progress_label.config(text="Stopped by user")
+        total = self.stat_total.get()
+        if len(self.targets) > 0:
+            percent = (total / len(self.targets)) * 100
+            self.progress_percent.config(text=f"{percent:.0f}%")
+        self._log_to_console("Bulk check stopped", "warning")
+
+    def _append_live_result(self, username: str, timestamp: str, status: str, platforms: List[str]):
+        if not self.live_export_path:
+            return
+        try:
+            with open(self.live_export_path, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow([timestamp, username, status, ",".join(platforms)])
+            if self.live_jsonl_path:
+                with open(self.live_jsonl_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({
+                        "timestamp": timestamp,
+                        "username": username,
+                        "status": status,
+                        "platforms": platforms,
+                        "session_id": self.session_id
+                    }, ensure_ascii=False) + "\n")
+        except Exception:
+            self.logger.exception("live_export_append_failed")
+
+    def _recover_last_session_file(self):
+        try:
+            if not os.path.exists(EXPORTS_DIR):
+                return
+            files = [os.path.join(EXPORTS_DIR, f) for f in os.listdir(EXPORTS_DIR) if f.startswith("session_") and f.endswith(".jsonl")]
+            if not files:
+                return
+            last_file = max(files, key=os.path.getmtime)
+            count = 0
+            with open(last_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        count += 1
+            if count > 0:
+                self._log_to_console(f"Recovered previous session log: {os.path.basename(last_file)} ({count} lines)", "info")
+        except Exception:
+            self.logger.exception("session_recovery_failed")
+
+    def _log_startup_health(self):
+        try:
+            stats = db.get_statistics(1)
+            proxies = len(self.proxy_mgr.proxies)
+            self._log_to_console(f"Health | DB OK | checks_24h={stats['total_checks']} | proxies={proxies}", "info")
+        except Exception:
+            self.logger.exception("startup_health_log_failed")
+
+    def _show_rate_limit_popup(self, platform: str):
+        try:
+            if self.rate_limit_popup and self.rate_limit_popup.winfo_exists():
+                self.rate_limit_popup.destroy()
+        except Exception:
+            pass
+
+        popup = tk.Toplevel(self.root)
+        popup.title("Rate Limit Detected")
+        popup.geometry("460x230")
+        popup.resizable(False, False)
+        popup.transient(self.root)
+        popup.attributes("-topmost", True)
+        frame = ttk.Frame(popup, padding=16)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(
+            frame,
+            text=f"Rate limit detected on {platform.title()}",
+            font=("Segoe UI", 12, "bold")
+        ).pack(anchor="w", pady=(0, 10))
+
+        message = (
+            "Recommendations:\n"
+            "1. Enable and rotate proxies.\n"
+            "2. Increase Instagram delay (jitter).\n"
+            "3. Reduce thread count.\n"
+            "4. Wait a few minutes before retrying."
+        )
+        ttk.Label(
+            frame,
+            text=message,
+            justify=tk.LEFT,
+            font=("Segoe UI", 10)
+        ).pack(anchor="w")
+
+        ttk.Button(
+            frame,
+            text="OK",
+            command=popup.destroy
+        ).pack(anchor="e", pady=(16, 0))
+
+        self.rate_limit_popup = popup
+        self._log_to_console(f"Rate limit detected on {platform.upper()}", "warning")
     
     def refresh_ui(self):
         self.refresh_proxy_list()
         Toast.show(self.root, "UI refreshed", "info")
     
     def _log_to_console(self, message: str, tag: str = "info"):
-        """Log with optimized rendering - batch updates and limit console size"""
         self.console.config(state="normal")
         self.console.insert("end", f"{message}\n", tag)
         
@@ -1623,7 +2020,6 @@ class AppWindow:
         self.console.config(state="disabled")
     
     def _log_to_monitor(self, message: str, tag: str = "info"):
-        """Monitor log with optimized rendering"""
         self.monitor_console.config(state="normal")
         self.monitor_console.insert("end", f"{message}\n", tag)
         
@@ -1638,7 +2034,7 @@ class AppWindow:
         if self.engine.active:
             if not messagebox.askyesno("Confirm Exit", "An audit is running. Are you sure you want to quit?"):
                 return
-        self.engine.stop()
+        self.engine.close()
         try:
             db.close()
         except Exception:
@@ -1649,8 +2045,85 @@ class AppWindow:
         
         self.root.deiconify()
         self.root.update_idletasks()
+        self._apply_dark_titlebar()
+        self.root.after(80, self._apply_dark_titlebar)
+        self.root.after(300, self._apply_dark_titlebar)
+        self.root.after(900, self._apply_dark_titlebar)
         
         self.root.mainloop()
 
+    def _apply_dark_titlebar(self):
+        try:
+            ws = self.root.tk.call("tk", "windowingsystem")
+        except Exception:
+            ws = "win32"
+        if ws == "win32":
+            try:
+                import ctypes
+                hwnd = ctypes.c_void_p(self.root.winfo_id())
+                use_dark = ctypes.c_int(1)
+                for attr in (20, 19):
+                    try:
+                        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                            hwnd,
+                            ctypes.c_uint(attr),
+                            ctypes.byref(use_dark),
+                            ctypes.sizeof(use_dark)
+                        )
+                    except Exception:
+                        pass
+                caption_color = ctypes.c_int(0x001c1c1c)
+                text_color = ctypes.c_int(0x00FFFFFF)
+                for attr, value in ((35, caption_color), (36, text_color)):
+                    try:
+                        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                            hwnd,
+                            ctypes.c_uint(attr),
+                            ctypes.byref(value),
+                            ctypes.sizeof(value)
+                        )
+                    except Exception:
+                        pass
+                try:
+                    import pywinstyles
+                    pywinstyles.change_header_color(self.root, "#1c1c1c")
+                except Exception:
+                    pass
+                try:
+                    SWP_NOMOVE = 0x0002
+                    SWP_NOSIZE = 0x0001
+                    SWP_NOZORDER = 0x0004
+                    SWP_FRAMECHANGED = 0x0020
+                    ctypes.windll.user32.SetWindowPos(
+                        hwnd,
+                        None,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            return
+        if ws == "aqua":
+            try:
+                self.root.tk.call("::tk::unsupported::MacWindowStyle", "appearance", self.root._w, "darkaqua")
+            except Exception:
+                try:
+                    self.root.tk.call("::tk::unsupported::MacWindowStyle", "appearance", self.root._w, "dark")
+                except Exception:
+                    pass
+            return
+        if ws == "x11":
+            try:
+                self.root.tk.call("option", "add", "*background", "#1c1c1c")
+            except Exception:
+                pass
+            return
+
 
 MainWindow = AppWindow
+
