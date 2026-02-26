@@ -11,9 +11,27 @@ _instagram_session_cookie = ""
 _blacklist_pending = set()
 _blacklist_pending_count = 0
 
+def _normalize_instagram_session_cookie(cookie: str) -> str:
+    if not cookie:
+        return ""
+    value = cookie.strip().strip('"').strip("'")
+    if not value:
+        return ""
+
+    parts = [part.strip() for part in value.split(";") if part.strip()]
+    for part in parts:
+        if part.lower().startswith("sessionid="):
+            value = part.split("=", 1)[1].strip()
+            break
+    else:
+        if value.lower().startswith("sessionid="):
+            value = value.split("=", 1)[1].strip()
+
+    return value.strip().strip('"').strip("'")
+
 def set_instagram_session_cookie(cookie: str):
     global _instagram_session_cookie
-    _instagram_session_cookie = cookie.strip() if cookie else ""
+    _instagram_session_cookie = _normalize_instagram_session_cookie(cookie)
 
 def get_instagram_session_cookie() -> str:
     return _instagram_session_cookie
@@ -441,18 +459,44 @@ class InstagramChecker(PlatformChecker):
         cookie = get_instagram_session_cookie()
         if not cookie:
             return False
+        self._setup_instagram_session()
         try:
             kwargs = self._request_kwargs()
-            response = self.session.get("https://www.instagram.com/api/v1/users/web_profile_info/?username=instagram", **kwargs)
-            if response.status_code != 200:
+            kwargs.pop("proxies", None)
+            response = self.session.get(
+                "https://www.instagram.com/api/v1/accounts/current_user/?edit=true",
+                allow_redirects=False,
+                **kwargs
+            )
+            if response.status_code == 200:
+                data = response.json()
+                user = data.get("user") or data.get("logged_in_user")
+                if isinstance(user, dict) and user.get("pk"):
+                    return True
+
+            fallback_kwargs = kwargs.copy()
+            fallback_kwargs["allow_redirects"] = False
+            fallback = self.session.get("https://www.instagram.com/accounts/edit/", **fallback_kwargs)
+            if fallback.status_code == 200 and "/accounts/login" not in fallback.url.lower():
+                return True
+
+            location = (fallback.headers.get("Location") or "").lower()
+            if "/accounts/login" in location:
                 return False
-            data = response.json()
-            user = data.get("data", {}).get("user")
-            return isinstance(user, dict)
+
+            return False
         except Exception:
             return False
 
     def _setup_instagram_session(self):
         cookie = get_instagram_session_cookie()
+        for existing in list(self.session.cookies):
+            if existing.name == "sessionid" and "instagram.com" in (existing.domain or ""):
+                try:
+                    self.session.cookies.clear(domain=existing.domain, path=existing.path, name=existing.name)
+                except Exception:
+                    pass
         if cookie and cookie.strip():
-            self.session.cookies.set('sessionid', cookie, domain='instagram.com', path='/')
+            self.session.cookies.set("sessionid", cookie, domain="instagram.com", path="/")
+            self.session.cookies.set("sessionid", cookie, domain=".instagram.com", path="/")
+            self.session.cookies.set("sessionid", cookie, domain="www.instagram.com", path="/")
